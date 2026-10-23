@@ -57,7 +57,7 @@ restart_asterisk() {
     service asterisk start >/dev/null 2>&1 || asterisk -U asterisk -G asterisk
   fi
   for _ in $(seq 1 30); do asterisk_up && break; sleep 1; done
-  asterisk_up || fail "Asterisk does not start. Look at: sudo tail -50 /var/log/asterisk/messages"
+  asterisk_up || fail "Asterisk does not start. Look at: sudo tail -50 /var/log/asterisk/messages.log"
   asterisk -rx "core waitfullybooted" >/dev/null 2>&1 || true
 }
 
@@ -94,12 +94,18 @@ say "4/6 Installing the game"
 DATA=$(asterisk -rx "core show settings" | awk -F': *' '/Data directory/ {print $2; exit}' | tr -d '[:space:]')
 DATA=${DATA:-/usr/share/asterisk}
 
-PASSWORD=""
-if [ ! -e "$ETC/phonegame-pjsip.conf" ] || [ "${NEW_PASSWORD:-}" = 1 ]; then
+# Line 6001's password, readable by root only, so every run can print the phone app login.
+SECRET=/etc/phonegame-6001.password
+PASSWORD=""; PW_STATE=kept
+[ -s "$SECRET" ] && [ -e "$ETC/phonegame-pjsip.conf" ] && PASSWORD=$(head -n1 "$SECRET")
+if [ -z "$PASSWORD" ] || [ "${NEW_PASSWORD:-}" = 1 ]; then
+  if [ -e "$ETC/phonegame-pjsip.conf" ]; then PW_STATE=changed; else PW_STATE=first; fi
   PASSWORD=$( (tr -dc 'a-km-np-z2-9' </dev/urandom || true) | head -c 16)
+  ( umask 077; printf '%s\n' "$PASSWORD" > "$SECRET" )
   MD5=$(printf '%s' "6001:asterisk:$PASSWORD" | md5sum | cut -d' ' -f1)
   sed "s/@MD5_CRED@/$MD5/" asterisk/phonegame-pjsip.conf > "$ETC/phonegame-pjsip.conf"
 fi
+chown root:root "$SECRET"; chmod 600 "$SECRET"
 install -m 640 -o root -g asterisk asterisk/phonegame-extensions.conf "$ETC/phonegame-extensions.conf"
 chown root:asterisk "$ETC/phonegame-pjsip.conf"; chmod 640 "$ETC/phonegame-pjsip.conf"
 grep -q '^#include phonegame-pjsip.conf' "$ETC/pjsip.conf" || printf '\n#include phonegame-pjsip.conf\n' >> "$ETC/pjsip.conf"
@@ -133,8 +139,8 @@ fi
 
 asterisk -rx "module reload res_pjsip.so" >/dev/null
 asterisk -rx "dialplan reload" >/dev/null
-asterisk -rx "pjsip show endpoint 6001" | grep -q 'Endpoint:  *6001' || fail "Phone line 6001 did not load. Look at: sudo tail -50 /var/log/asterisk/messages"
-asterisk -rx "dialplan show 7000@phonegame-phone" | grep -q phonegame-call || fail "The game's dialplan did not load. Look at: sudo tail -50 /var/log/asterisk/messages"
+asterisk -rx "pjsip show endpoint 6001" | grep -q 'Endpoint:  *6001' || fail "Phone line 6001 did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
+asterisk -rx "dialplan show 7000@phonegame-phone" | grep -q phonegame-call || fail "The game's dialplan did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
 echo "OK"
 
 # ---------- 5. website ----------
@@ -165,18 +171,23 @@ fi
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}'); IP=${IP:-THIS-SERVER-IP}
 say "Done! The Phone Game is installed."
-if [ -n "$PASSWORD" ]; then
-  cat <<DONE
-Put this account into MicroSIP (or Zoiper / Linphone). Write the password down: it is not saved anywhere.
+cat <<DONE
+Put this account into MicroSIP (Menu > Add account). Zoiper and Linphone use the same values.
 
-    SIP server : $IP
-    Username   : 6001
-    Password   : $PASSWORD
-    Transport  : UDP
+    Account name : Phone Game
+    SIP Server   : $IP
+    Username     : 6001
+    Domain       : $IP
+    Login        : 6001
+    Password     : $PASSWORD
+    Transport    : UDP
+
 DONE
-else
-  echo "Phone line 6001 kept its password. For a new one: sudo NEW_PASSWORD=1 bash install.sh"
-fi
+case "$PW_STATE" in
+  kept)    echo "Same password as before. For a new one: sudo NEW_PASSWORD=1 bash install.sh" ;;
+  changed) echo "This password is NEW: change it in MicroSIP too." ;;
+esac
+echo "To see this login again, run the installer again (or: sudo cat $SECRET)."
 case "$IP" in 10.0.2.*)
   cat <<WARN
 
