@@ -4,7 +4,8 @@
 #
 #   phonegame-call start                 (re)start the game: Sms in a few seconds
 #   phonegame-call after <msg> heard|missed   used by the dialplan after each call
-#   phonegame-call documentation         the player opened /documentation (calls once, ever)
+#   phonegame-call documentation         the player opened /documentation (calls once, and only after
+#                                        the clue call was answered; earlier visits do nothing)
 #   phonegame-call web                   handle a request file left by the website (run by phonegame-web.path)
 #   phonegame-call reset                 stop everything and forget progress
 #   phonegame-call status
@@ -56,12 +57,18 @@ count() { cat "$STATE/szyfr-count" 2>/dev/null || echo 0; }
 
 case "${1:-}" in
   start)
-    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count"
+    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count" "$STATE/clue-heard" "$STATE/documentation-tries"
     rmdir "$STATE/documentation-called" 2>/dev/null || true
     plan sms "$SMS_DELAY"
     ;;
   after)
     msg=${2:-}; result=${3:-missed}
+    if [ "$msg" = documentation ]; then
+      # The last call was not answered (or the phone was busy, e.g. still on the clue call): try again soon.
+      n=$(( $(cat "$STATE/documentation-tries" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STATE/documentation-tries"
+      if [ "$n" -lt 10 ]; then plan documentation 30; else log "gave up on the last call after $n tries"; fi
+      exit 0
+    fi
     [ -e "$STATE/finished" ] && exit 0                    # player reached /documentation: no more story calls
     case "$msg" in
       sms)
@@ -72,7 +79,6 @@ case "${1:-}" in
         if [ "$next" -le 0 ]; then log "clue heard, waiting for /documentation"
         elif [ "$n" -ge "$MAX_SZYFR_CALLS" ]; then log "gave up after $n clue calls"
         else plan szyfr "$next"; fi ;;
-      documentation) ;;                                   # the last call: nothing follows (not repeated)
       *) exit 1 ;;
     esac
     ;;
@@ -82,6 +88,9 @@ case "${1:-}" in
     exec "$0" documentation
     ;;
   documentation)
+    # Someone can open the website before playing (or before hearing the clue): then nothing happens
+    # and the one final call is kept for later.
+    if [ ! -e "$STATE/clue-heard" ]; then echo too_early; log "/documentation opened before the clue was heard"; exit 0; fi
     # mkdir is atomic: only the very first visit gets through, however often the page is opened.
     if ! mkdir "$STATE/documentation-called" 2>/dev/null; then echo already_called; exit 0; fi
     touch "$STATE/finished"
@@ -90,12 +99,13 @@ case "${1:-}" in
     echo planned
     ;;
   reset)
-    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count"
+    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count" "$STATE/clue-heard" "$STATE/documentation-tries"
     rmdir "$STATE/documentation-called" 2>/dev/null || true
     log "reset"
     ;;
   status)
     echo "clue calls so far: $(count)"
+    if [ -e "$STATE/clue-heard" ]; then echo "clue heard: /documentation will call"; else echo "clue not heard yet: /documentation does nothing"; fi
     [ -e "$STATE/finished" ] && echo "player reached /documentation"
     ls -l "$SPOOL"/phonegame-*.call 2>/dev/null || echo "no call waiting"
     ;;
