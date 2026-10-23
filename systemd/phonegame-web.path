@@ -1,0 +1,11 @@
+# Phone Game: when the website drops a request file ("the player opened /documentation"),
+# run phonegame-web.service. The website itself needs no sudo or Asterisk rights.
+[Unit]
+Description=Phone Game: watch for website requests
+
+[Path]
+PathExists=/var/lib/phonegame-web/documentation.request
+Unit=phonegame-web.service
+
+[Install]
+WantedBy=multi-user.target

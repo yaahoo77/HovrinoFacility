@@ -1,0 +1,2 @@
+# Phone Game: only used on servers without systemd. Handles website requests once a minute.
+* * * * * asterisk /usr/local/bin/phonegame-call web

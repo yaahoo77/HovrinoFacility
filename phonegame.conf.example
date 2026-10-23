@@ -1,0 +1,11 @@
+# Phone Game settings (/etc/phonegame.conf). Times in seconds.
+PHONE=PJSIP/6001
+CALLER_ID="\"Phone Game\" <7000>"
+SMS_DELAY=10
+FIRST_SZYFR_DELAY=60
+# A clue call that isn't answered is tried again after this many seconds
+SZYFR_INTERVAL=180
+# 0 = after the player hangs up on the clue, wait for /documentation. E.g. 180 = call with the clue again 3 minutes later
+SZYFR_AGAIN_AFTER_HANGUP=0
+MAX_SZYFR_CALLS=10
+DOCUMENTATION_DELAY=10
