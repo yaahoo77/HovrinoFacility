@@ -31,16 +31,19 @@ cd HovrinoFacility
 sudo bash install.sh
 ```
 
-It asks once, then does everything by itself: installs Asterisk, Apache and PHP, fixes a fresh Asterisk (missing config files, no SIP port), backs up any existing Asterisk config, adds the game and the website, and opens the firewall if `ufw` is on. At the end it prints the phone app login:
+It asks once, then does everything by itself: installs Asterisk, Apache and PHP, fixes a fresh Asterisk (missing config files, no SIP port), backs up any existing Asterisk config, adds the game and the website, and opens the firewall if `ufw` is on. At the end it prints the login for MicroSIP (Menu > Add account):
 
 ```
-SIP server : 192.168.1.50
-Username   : 6001
-Password   : xxxxxxxxxxxxxxxx
-Transport  : UDP
+Account name : Phone Game
+SIP Server   : 192.168.1.50
+Username     : 6001
+Domain       : 192.168.1.50
+Login        : 6001
+Password     : xxxxxxxxxxxxxxxx
+Transport    : UDP
 ```
 
-Write the password down: it isn't saved anywhere. Running the installer again is safe; for a new password run `sudo NEW_PASSWORD=1 bash install.sh`.
+Running the installer again is safe, keeps the password and prints the same login again. For a new password run `sudo NEW_PASSWORD=1 bash install.sh`.
 
 To update the game later: `git pull`, then `sudo bash install.sh` again.
 
@@ -111,7 +114,7 @@ journalctl -t phonegame                   # what the game planned
 
 | File | What |
 |---|---|
-| `asterisk/phonegame-pjsip.conf` | the player's line 6001. It can only call 7000 (context `phonegame-phone`). |
+| `asterisk/phonegame-pjsip.conf` | the player's line 6001. It can only call 7000 (context `phonegame-phone`). Its password is kept in `/etc/phonegame-6001.password` (root only), so the installer can print the login every time. |
 | `asterisk/phonegame-extensions.conf` | 7000 starts the game; `sms`, `szyfr`, `documentation` play the sounds; after each call a hangup handler (or the `failed` extension, if nobody answered) asks `phonegame-call` for the next call |
 | `bin/phonegame-call` | writes call files to `/var/spool/asterisk/outgoing/`. A call file whose modification time is in the future is placed by Asterisk at that time, which is how the delays work. It remembers progress in `/var/lib/phonegame/`. |
 | `web/phonegame/documentation.php` | leaves a request file in `/var/lib/phonegame-web/`. That's all the website is allowed to do: no sudo, no access to Asterisk. |
@@ -124,7 +127,7 @@ Remove the two `#include phonegame-…` lines from `/etc/asterisk/pjsip.conf` an
 
 ```bash
 sudo systemctl disable --now phonegame-web.path
-sudo rm /etc/asterisk/phonegame-*.conf /usr/local/bin/phonegame-call /etc/phonegame.conf /etc/systemd/system/phonegame-web.* /etc/cron.d/phonegame
+sudo rm /etc/asterisk/phonegame-*.conf /usr/local/bin/phonegame-call /etc/phonegame.conf /etc/phonegame-6001.password /etc/systemd/system/phonegame-web.* /etc/cron.d/phonegame
 sudo rm -r /var/lib/phonegame /var/lib/phonegame-web /var/spool/asterisk/phonegame-tmp /var/www/html/phonegame
 sudo a2disconf phonegame-site; sudo rm /etc/apache2/conf-available/phonegame-site.conf
 sudo asterisk -rx "module reload res_pjsip.so"; sudo asterisk -rx "dialplan reload"
