@@ -3,11 +3,13 @@
 #   sudo bash install.sh            shows what it will do and asks once
 #   sudo bash install.sh --yes      no questions
 # Your existing Asterisk config is backed up first; the game only adds its own files.
-set -euo pipefail
+set -Eeuo pipefail
 cd "$(dirname "$0")"
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
-fail() { printf '\n\033[31mProblem: %s\033[0m\n' "$*" >&2; exit 1; }
+fail() { trap - ERR; printf '\n\033[31mProblem: %s\033[0m\n' "$*" >&2; exit 1; }
+# Never stop without saying why.
+trap 'fail "The installer stopped at line $LINENO ($BASH_COMMAND). Run it again; if it stops at the same place, send a photo of this screen."' ERR
 
 [ "$(id -u)" = 0 ] || fail "Run it with sudo:  sudo bash install.sh"
 command -v apt-get >/dev/null || fail "This installer needs Ubuntu (or another system with apt)."
@@ -24,11 +26,12 @@ This installs the Phone Game on this server. It will:
   3. restore Asterisk's standard config files if any are missing, and add a SIP port (UDP 5060) if there is none
      (this restarts Asterisk once; calls in progress would be cut)
   4. add the game: phone line 6001, the story, the 3 sounds, the /documentation trigger
+     (a 6001 of your own in pjsip.conf would block it, so it gets commented out)
   5. copy the website from site/ to $WEBROOT (if site/ has one)
   6. if the ufw firewall is on: allow SIP (5060/udp), audio (10000-20000/udp) and the website (80/tcp)
 INFO
 if [ "${1:-}" != "--yes" ]; then
-  read -r -p "Continue? [y/N] " a
+  read -r -p "Continue? [y/N] " a || a=""
   case "$a" in y|Y|yes) ;; *) echo "Nothing changed."; exit 0 ;; esac
 fi
 
@@ -50,14 +53,32 @@ start_service() { # start_service <name>
   else service "$1" restart >/dev/null 2>&1 || service "$1" start >/dev/null 2>&1 || true; fi
 }
 asterisk_up() { asterisk -rx "core show version" >/dev/null 2>&1; }
+# Read a command's whole output before searching it. "asterisk -rx ... | grep -q" fails at random on slow
+# machines: grep stops at the first match, asterisk is still writing and dies of SIGPIPE, and pipefail
+# turns that into a failed check.
+ast() { asterisk -rx "$1" 2>/dev/null || true; }
+has() { grep -qiE "$2" <<<"$(ast "$1")"; }
+sip_port_up() { has "pjsip show transports" udp; }
+wait_sip_port() { for _ in $(seq 1 10); do sip_port_up && return 0; sleep 1; done; return 1; }
+asterisk_errors() {
+  echo "Asterisk's last errors (/var/log/asterisk/messages.log):"
+  { grep -E 'ERROR|Failed to bind' /var/log/asterisk/messages.log 2>/dev/null | grep -v 'declined to load' | tail -n 6; } || echo "  (none found)"
+}
+# Stops every Asterisk process, also stray copies started by hand, then starts exactly one.
 restart_asterisk() {
-  if [ "$HAS_SYSTEMD" = 1 ]; then systemctl enable -q asterisk 2>/dev/null || true; systemctl restart asterisk
-  else
-    asterisk_up && { asterisk -rx "core stop now" >/dev/null 2>&1 || true; sleep 2; }
-    service asterisk start >/dev/null 2>&1 || asterisk -U asterisk -G asterisk
+  if [ "$HAS_SYSTEMD" = 1 ]; then systemctl stop asterisk 2>/dev/null || true
+  else asterisk_up && { asterisk -rx "core stop now" >/dev/null 2>&1 || true; }
+  fi
+  for _ in $(seq 1 10); do pgrep -x asterisk >/dev/null || break; sleep 1; done
+  if pgrep -x asterisk >/dev/null; then
+    pkill -x asterisk || true; sleep 2
+    pkill -9 -x asterisk || true; sleep 1
+  fi
+  if [ "$HAS_SYSTEMD" = 1 ]; then systemctl enable -q asterisk 2>/dev/null || true; systemctl start asterisk || true
+  else service asterisk start >/dev/null 2>&1 || asterisk -U asterisk -G asterisk || true
   fi
   for _ in $(seq 1 30); do asterisk_up && break; sleep 1; done
-  asterisk_up || fail "Asterisk does not start. Look at: sudo tail -50 /var/log/asterisk/messages.log"
+  asterisk_up || { asterisk_errors; fail "Asterisk does not start (see its errors above)."; }
   asterisk -rx "core waitfullybooted" >/dev/null 2>&1 || true
 }
 
@@ -77,6 +98,7 @@ id asterisk >/dev/null 2>&1 || fail "There is no 'asterisk' user. Was Asterisk b
 
 RESTART=0
 asterisk_up || RESTART=1
+if [ "$(pgrep -c -x asterisk || true)" -gt 1 ]; then echo "More than one Asterisk is running"; RESTART=1; fi
 # A UDP transport defined in pjsip.conf (or a file it includes)?
 if ! grep -rqsE '^\s*protocol\s*=\s*udp' "$ETC"/pjsip*.conf; then
   printf '\n; Added by the Phone Game installer: SIP over UDP on port 5060\n[phonegame-udp]\ntype=transport\nprotocol=udp\nbind=0.0.0.0:5060\n' >> "$ETC/pjsip.conf"
@@ -85,13 +107,21 @@ if ! grep -rqsE '^\s*protocol\s*=\s*udp' "$ETC"/pjsip*.conf; then
 fi
 [ "$RESTART" = 1 ] && { echo "Starting Asterisk"; restart_asterisk; }
 asterisk -rx "core waitfullybooted" >/dev/null 2>&1 || true
-asterisk -rx "pjsip show transports" | grep -qi udp \
-  || fail "Asterisk has no working SIP port. Is something else using UDP 5060? Check: sudo ss -lunp | grep 5060"
+if ! wait_sip_port; then
+  echo "Asterisk has no working SIP port, restarting it cleanly"
+  restart_asterisk
+  if ! wait_sip_port; then
+    echo "Programs using UDP port 5060:"
+    { command -v ss >/dev/null && ss -lunp | grep ':5060 '; } || echo "  (none found)"
+    asterisk_errors
+    fail "Asterisk has no working SIP port (UDP 5060). If another program is listed above, stop it and run the installer again."
+  fi
+fi
 echo "OK"
 
 # ---------- 4. the game ----------
 say "4/6 Installing the game"
-DATA=$(asterisk -rx "core show settings" | awk -F': *' '/Data directory/ {print $2; exit}' | tr -d '[:space:]')
+DATA=$(awk -F': *' '/Data directory/ {print $2; exit}' <<<"$(ast "core show settings")" | tr -d '[:space:]') || true
 DATA=${DATA:-/usr/share/asterisk}
 
 # Line 6001's password, readable by root only, so every run can print the phone app login.
@@ -109,6 +139,15 @@ chown root:root "$SECRET"; chmod 600 "$SECRET"
 install -m 640 -o root -g asterisk asterisk/phonegame-extensions.conf "$ETC/phonegame-extensions.conf"
 chown root:asterisk "$ETC/phonegame-pjsip.conf"; chmod 640 "$ETC/phonegame-pjsip.conf"
 grep -q '^#include phonegame-pjsip.conf' "$ETC/pjsip.conf" || printf '\n#include phonegame-pjsip.conf\n' >> "$ETC/pjsip.conf"
+# A hand-written [6001] in pjsip.conf makes Asterisk reject the game's line ("duplicate object"): comment it out.
+if grep -qE '^\s*\[6001\]' "$ETC/pjsip.conf"; then
+  awk '/^[[:space:]]*\[/ { off = ($0 ~ /^[[:space:]]*\[6001\]/) }
+       off && NF && !/^[[:space:]]*[;#]/ { print ";phonegame-off; " $0; next }
+       { print }' "$ETC/pjsip.conf" > "$ETC/pjsip.conf.phonegame-new"
+  cat "$ETC/pjsip.conf.phonegame-new" > "$ETC/pjsip.conf"; rm -f "$ETC/pjsip.conf.phonegame-new"
+  echo "pjsip.conf had its own phone line 6001, which blocks the game's line. It is now commented out"
+  echo "(lines starting with ';phonegame-off;'). The original is in $ETC.backup-$STAMP"
+fi
 grep -q '^#include phonegame-extensions.conf' "$ETC/extensions.conf" || printf '\n#include phonegame-extensions.conf\n' >> "$ETC/extensions.conf"
 
 install -d -o asterisk -g asterisk "$DATA/sounds/custom"
@@ -137,10 +176,14 @@ else
   echo "No systemd: website requests are handled by cron once a minute"
 fi
 
-asterisk -rx "module reload res_pjsip.so" >/dev/null
-asterisk -rx "dialplan reload" >/dev/null
-asterisk -rx "pjsip show endpoint 6001" | grep -q 'Endpoint:  *6001' || fail "Phone line 6001 did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
-asterisk -rx "dialplan show 7000@phonegame-phone" | grep -q phonegame-call || fail "The game's dialplan did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
+game_loaded() { has "pjsip show endpoint 6001" 'Endpoint: +6001' && has "dialplan show 7000@phonegame-phone" phonegame-call; }
+asterisk -rx "module reload res_pjsip.so" >/dev/null 2>&1 || true
+asterisk -rx "dialplan reload" >/dev/null 2>&1 || true
+if ! game_loaded; then
+  echo "Asterisk didn't pick up the game, restarting it cleanly"
+  restart_asterisk
+  game_loaded || { asterisk_errors; fail "Asterisk didn't load the game's phone line or dialplan (see its errors above)."; }
+fi
 echo "OK"
 
 # ---------- 5. website ----------
@@ -162,7 +205,7 @@ echo "OK"
 
 # ---------- 6. firewall ----------
 say "6/6 Firewall"
-if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+if command -v ufw >/dev/null && grep -q "Status: active" <<<"$(ufw status 2>/dev/null)"; then
   ufw allow 5060/udp >/dev/null; ufw allow 10000:20000/udp >/dev/null; ufw allow 80/tcp >/dev/null
   echo "Opened 5060/udp, 10000-20000/udp and 80/tcp"
 else
