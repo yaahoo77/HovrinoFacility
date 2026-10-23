@@ -1,0 +1,7 @@
+[Unit]
+Description=Phone Game: handle a website request (/documentation opened)
+
+[Service]
+Type=oneshot
+User=asterisk
+ExecStart=/usr/local/bin/phonegame-call web

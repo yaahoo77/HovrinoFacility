@@ -1,0 +1,104 @@
+#!/bin/sh
+# Phone Game: plans the game's calls by writing Asterisk call files.
+# A call file with a modification time in the future is placed by Asterisk at that time.
+#
+#   phonegame-call start                 (re)start the game: Sms in a few seconds
+#   phonegame-call after <msg> heard|missed   used by the dialplan after each call
+#   phonegame-call documentation         the player opened /documentation (calls once, ever)
+#   phonegame-call web                   handle a request file left by the website (run by phonegame-web.path)
+#   phonegame-call reset                 stop everything and forget progress
+#   phonegame-call status
+set -eu
+
+CONF=/etc/phonegame.conf
+[ -r "$CONF" ] && . "$CONF"
+PHONE=${PHONE:-PJSIP/6001}
+CALLER_ID=${CALLER_ID:-\"Phone Game\" <7000>}
+SMS_DELAY=${SMS_DELAY:-10}                # seconds from dialing 7000 to the Sms call
+FIRST_SZYFR_DELAY=${FIRST_SZYFR_DELAY:-60} # seconds from the end of Sms to the first clue call
+SZYFR_INTERVAL=${SZYFR_INTERVAL:-180}     # a missed call (not answered) is tried again after this (3 minutes)
+SZYFR_AGAIN_AFTER_HANGUP=${SZYFR_AGAIN_AFTER_HANGUP:-0} # 0 = after the player hangs up on the clue, wait for /documentation;
+                                          # e.g. 180 = also call with the clue again 3 minutes later
+MAX_SZYFR_CALLS=${MAX_SZYFR_CALLS:-10}    # stop calling after this many clue calls
+DOCUMENTATION_DELAY=${DOCUMENTATION_DELAY:-10}
+
+STATE=/var/lib/phonegame
+WEBREQ=/var/lib/phonegame-web/documentation.request   # written by documentation.php
+SPOOL=/var/spool/asterisk/outgoing
+TMP=/var/spool/asterisk/phonegame-tmp     # same disk as the spool, so mv is atomic
+
+log() { logger -t phonegame -- "$*" 2>/dev/null || true; }
+
+plan() { # plan <message> <delay seconds>
+  f=$(mktemp "$TMP/call.XXXXXX")
+  cat > "$f" <<CALL
+Channel: $PHONE
+CallerID: $CALLER_ID
+WaitTime: 30
+MaxRetries: 0
+Context: phonegame
+Extension: $1
+Priority: 1
+Setvar: PG_MSG=$1
+CALL
+  chmod 644 "$f"
+  touch -d "@$(( $(date +%s) + $2 ))" "$f"
+  # Asterisk deletes a call file when its call ends, so every call gets its own file name.
+  # Older waiting calls for the same message are replaced (one waiting call per message).
+  for old in "$SPOOL"/phonegame-"$1"-*.call; do
+    if [ -e "$old" ] && [ "$(stat -c %Y "$old")" -gt "$(date +%s)" ]; then rm -f "$old"; fi
+  done
+  mv -f "$f" "$SPOOL/phonegame-$1-$(date +%s)-$$.call"
+  log "planned $1 in $2 s"
+}
+
+count() { cat "$STATE/szyfr-count" 2>/dev/null || echo 0; }
+
+case "${1:-}" in
+  start)
+    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count"
+    rmdir "$STATE/documentation-called" 2>/dev/null || true
+    plan sms "$SMS_DELAY"
+    ;;
+  after)
+    msg=${2:-}; result=${3:-missed}
+    [ -e "$STATE/finished" ] && exit 0                    # player reached /documentation: no more story calls
+    case "$msg" in
+      sms)
+        if [ "$result" = heard ]; then plan szyfr "$FIRST_SZYFR_DELAY"; else plan sms "$SZYFR_INTERVAL"; fi ;;
+      szyfr)
+        n=$(( $(count) + 1 )); echo "$n" > "$STATE/szyfr-count"
+        if [ "$result" = heard ]; then next=$SZYFR_AGAIN_AFTER_HANGUP; else next=$SZYFR_INTERVAL; fi
+        if [ "$next" -le 0 ]; then log "clue heard, waiting for /documentation"
+        elif [ "$n" -ge "$MAX_SZYFR_CALLS" ]; then log "gave up after $n clue calls"
+        else plan szyfr "$next"; fi ;;
+      documentation) ;;                                   # the last call: nothing follows (not repeated)
+      *) exit 1 ;;
+    esac
+    ;;
+  web)
+    [ -e "$WEBREQ" ] || exit 0
+    rm -f "$WEBREQ"
+    exec "$0" documentation
+    ;;
+  documentation)
+    # mkdir is atomic: only the very first visit gets through, however often the page is opened.
+    if ! mkdir "$STATE/documentation-called" 2>/dev/null; then echo already_called; exit 0; fi
+    touch "$STATE/finished"
+    rm -f "$SPOOL"/phonegame-sms-*.call "$SPOOL"/phonegame-szyfr-*.call
+    plan documentation "$DOCUMENTATION_DELAY"
+    echo planned
+    ;;
+  reset)
+    rm -f "$SPOOL"/phonegame-*.call "$STATE/finished" "$STATE/szyfr-count"
+    rmdir "$STATE/documentation-called" 2>/dev/null || true
+    log "reset"
+    ;;
+  status)
+    echo "clue calls so far: $(count)"
+    [ -e "$STATE/finished" ] && echo "player reached /documentation"
+    ls -l "$SPOOL"/phonegame-*.call 2>/dev/null || echo "no call waiting"
+    ;;
+  *)
+    echo "usage: phonegame-call start|reset|status|documentation|web" >&2; exit 2 ;;
+esac
