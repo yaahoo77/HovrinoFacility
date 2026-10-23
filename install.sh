@@ -13,11 +13,23 @@ trap 'fail "The installer stopped at line $LINENO ($BASH_COMMAND). Run it again;
 
 [ "$(id -u)" = 0 ] || fail "Run it with sudo:  sudo bash install.sh"
 command -v apt-get >/dev/null || fail "This installer needs Ubuntu (or another system with apt)."
+# One installer at a time, and a clear word if someone presses Ctrl+C.
+exec 9>/run/phonegame-install.lock
+flock -n 9 || fail "The installer is already running (in another window?). Wait for it to finish."
+trap 'trap - ERR; printf "\n\033[31mStopped. Nothing is broken: run  sudo bash install.sh  again to finish.\033[0m\n" >&2; exit 130' INT TERM HUP
 
 ETC=/etc/asterisk
 WEBROOT=/var/www/html
 STAMP=$(date +%Y%m%d-%H%M%S)
 HAS_SYSTEMD=0; [ -d /run/systemd/system ] && HAS_SYSTEMD=1
+
+# Checks that change nothing: system, disk space.
+. /etc/os-release 2>/dev/null || true
+if [ "${ID:-}" != ubuntu ] || [ "${VERSION_ID:-}" != 24.04 ]; then
+  printf '\033[33mNote: this was tested on Ubuntu 24.04; this system is %s. It may still work.\033[0m\n\n' "${PRETTY_NAME:-unknown}"
+fi
+FREE_MB=$(df -Pm / | awk 'NR==2 {print $4}')
+[ "${FREE_MB:-0}" -ge 800 ] || fail "Only ${FREE_MB:-?} MB free on the disk; the game needs about 800 MB. Give the VM a bigger disk."
 
 cat <<INFO
 This installs the Phone Game on this server. It will:
@@ -42,9 +54,23 @@ NEED=()
 for p in asterisk asterisk-core-sounds-en apache2 php libapache2-mod-php; do
   dpkg -s "$p" >/dev/null 2>&1 || NEED+=("$p")
 done
+# A fresh Ubuntu often installs updates in the background for a while; wait instead of failing.
+wait_for_apt() {
+  local told=0
+  for _ in $(seq 1 120); do
+    pgrep -f '^(/usr/bin/)?(apt|apt-get|dpkg) |unattended-upgr' >/dev/null || return 0
+    [ "$told" = 1 ] || { echo "Ubuntu is installing updates in the background, waiting for it to finish..."; told=1; }
+    sleep 5
+  done
+}
+NO_NET="This VM can't download packages. Check its internet: in VirtualBox, Settings > Network > Adapter 1 must be \"Bridged Adapter\" on the card your PC uses for internet (Wi-Fi or cable). Then run the installer again."
 if [ ${#NEED[@]} -gt 0 ]; then
-  apt-get update -qq || fail "apt-get update failed. Is the server online?"
-  apt-get install -y -qq "${NEED[@]}" >/dev/null || fail "Installing ${NEED[*]} failed (see the messages above)."
+  wait_for_apt
+  apt-get -o DPkg::Lock::Timeout=600 update -qq || fail "$NO_NET"
+  grep -q 'Candidate: [0-9]' <<<"$(apt-cache policy asterisk)" \
+    || fail "Can't find the Asterisk package. Most likely: $NO_NET (If the internet works, this system doesn't offer Asterisk: use Ubuntu 24.04.)"
+  wait_for_apt
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${NEED[@]}" >/dev/null || fail "Installing ${NEED[*]} failed (see the messages above). If it says it couldn't download: $NO_NET"
 fi
 echo "OK"
 
