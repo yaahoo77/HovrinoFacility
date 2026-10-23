@@ -3,6 +3,7 @@
 # so install.sh can serve them with Apache next to the game.
 #   bash tools/build-site.sh /path/to/your-lovable-repo
 # Needs Node.js 20+ (or bun). Your Lovable repository itself is not changed.
+# Audio/images uploaded in Lovable come from site-media/ (see the end of this script).
 set -euo pipefail
 GAME=$(cd "$(dirname "$0")/.." && pwd)
 SRC=${1:?usage: bash tools/build-site.sh /path/to/your-lovable-repo}
@@ -28,4 +29,27 @@ npx vite build --config vite.phonegame.config.ts
 find "$GAME/site" -mindepth 1 ! -name README.md -delete
 cp -r dist/client/. "$GAME/site/"
 cp "$GAME/site/_shell.html" "$GAME/site/index.html"   # Apache serves index.html for every page
+
+# Files uploaded in Lovable (audio, images...) are not in the repository: Lovable keeps them on its own
+# server and the site points to them as /__l5e/assets-v1/... Put a copy at that same path in site/,
+# taken from site-media/ (by original file name) or, with LOVABLE_SITE=https://your-site.lovable.app,
+# downloaded from your published Lovable site (and kept in site-media/ for next time).
+MISSING=0
+for meta in "$SRC"/src/assets/*.asset.json; do
+  [ -e "$meta" ] || continue
+  url=$(node -p 'require(process.argv[1]).url' "$meta")
+  name=$(node -p 'require(process.argv[1]).original_filename' "$meta")
+  dest="$GAME/site$url"
+  mkdir -p "$(dirname "$dest")"
+  if [ -f "$GAME/site-media/$name" ]; then
+    cp "$GAME/site-media/$name" "$dest"
+  elif [ -n "${LOVABLE_SITE:-}" ] && curl -fsSL -o "$dest" "${LOVABLE_SITE%/}$url"; then
+    mkdir -p "$GAME/site-media"; cp "$dest" "$GAME/site-media/$name"
+    echo "Downloaded $name from $LOVABLE_SITE into site-media/"
+  else
+    rm -f "$dest"; MISSING=1
+    echo "MISSING: $name (put it into site-media/, or run again with LOVABLE_SITE=https://your-site.lovable.app)" >&2
+  fi
+done
+[ "$MISSING" = 0 ] || echo "The website works, but the files marked MISSING won't play or show until you add them." >&2
 echo "Website built into $GAME/site ($(find "$GAME/site" -type f | wc -l) files). Now run: sudo bash install.sh"
