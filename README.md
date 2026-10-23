@@ -7,7 +7,9 @@ The phone calls you, plays a message, and keeps calling back with a clue until y
 
 1. The player calls **7000** from their phone app. The game hangs up and, 10 seconds later, calls back with **Sms**.
 2. One minute after Sms has been heard to the end, it calls with the **Caesar cipher clue** (szyfrCezaraStrona). The clue plays over and over until the player hangs up. If the call isn't answered, it's tried again every 3 minutes. If Sms isn't heard to the end, Sms is repeated first.
-3. After hanging up on the clue, the player has to crack it and open **/documentation** on the website. The phone then rings 10 seconds later with the final message (Untitled). However often the page is opened, it calls only once.
+3. After hanging up on the clue, the player has to crack it and open **/documentation** on the website. The phone then rings 10 seconds later with the final message (Untitled). However often the page is opened, it calls only once. If the player misses that call, it rings again every 30 seconds (up to 10 times).
+
+The website address can be shared freely: opening the site or /documentation **before** the player has picked up the clue call does nothing (no call, and the final call is not used up).
 
 Every call comes from the same number, **7000 "Phone Game"**. Calling 7000 again restarts the game from the beginning.
 
@@ -107,6 +109,7 @@ journalctl -t phonegame                   # what the game planned
 | `curl -X POST http://localhost/phonegame/documentation.php` says `could not plan the call` | Its `detail` says why. Run `sudo bash install.sh` again (it re-creates `/var/lib/phonegame-web` with the right permissions). Check the watcher with `systemctl status phonegame-web.path`. |
 | `planned`, but the phone doesn't ring | `sudo journalctl -u phonegame-web.service` shows what happened. `sudo -u asterisk phonegame-call status` shows whether a call is waiting. |
 | `already_called` | /documentation has already called once. Call 7000 to start a new game. |
+| `too_early` | The player hasn't picked up the clue call yet, so /documentation does nothing on purpose. Call 7000 and listen to the calls first. |
 | Asterisk shows an error or doesn't answer | `sudo systemctl restart asterisk`, then `sudo systemctl status asterisk` should say "active (running)". If it doesn't start, `sudo journalctl -u asterisk -n 30` and `sudo tail -50 /var/log/asterisk/messages.log` show why. Running `sudo bash install.sh` again also repairs the setup and restarts Asterisk. |
 | "Unable to open ... asterisk.conf" | Harmless: `asterisk` was run without `sudo`. Use `sudo asterisk -r` to open the Asterisk console. |
 
