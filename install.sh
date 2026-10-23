@@ -57,7 +57,7 @@ restart_asterisk() {
     service asterisk start >/dev/null 2>&1 || asterisk -U asterisk -G asterisk
   fi
   for _ in $(seq 1 30); do asterisk_up && break; sleep 1; done
-  asterisk_up || fail "Asterisk does not start. Look at: sudo tail -50 /var/log/asterisk/messages"
+  asterisk_up || fail "Asterisk does not start. Look at: sudo tail -50 /var/log/asterisk/messages.log"
   asterisk -rx "core waitfullybooted" >/dev/null 2>&1 || true
 }
 
@@ -133,8 +133,8 @@ fi
 
 asterisk -rx "module reload res_pjsip.so" >/dev/null
 asterisk -rx "dialplan reload" >/dev/null
-asterisk -rx "pjsip show endpoint 6001" | grep -q 'Endpoint:  *6001' || fail "Phone line 6001 did not load. Look at: sudo tail -50 /var/log/asterisk/messages"
-asterisk -rx "dialplan show 7000@phonegame-phone" | grep -q phonegame-call || fail "The game's dialplan did not load. Look at: sudo tail -50 /var/log/asterisk/messages"
+asterisk -rx "pjsip show endpoint 6001" | grep -q 'Endpoint:  *6001' || fail "Phone line 6001 did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
+asterisk -rx "dialplan show 7000@phonegame-phone" | grep -q phonegame-call || fail "The game's dialplan did not load. Look at: sudo tail -50 /var/log/asterisk/messages.log"
 echo "OK"
 
 # ---------- 5. website ----------

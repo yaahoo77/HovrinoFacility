@@ -104,6 +104,7 @@ journalctl -t phonegame                   # what the game planned
 | `curl -X POST http://localhost/phonegame/documentation.php` says `could not plan the call` | Its `detail` says why. Run `sudo bash install.sh` again (it re-creates `/var/lib/phonegame-web` with the right permissions). Check the watcher with `systemctl status phonegame-web.path`. |
 | `planned`, but the phone doesn't ring | `sudo journalctl -u phonegame-web.service` shows what happened. `sudo -u asterisk phonegame-call status` shows whether a call is waiting. |
 | `already_called` | /documentation has already called once. Call 7000 to start a new game. |
+| Asterisk shows an error or doesn't answer | `sudo systemctl restart asterisk`, then `sudo systemctl status asterisk` should say "active (running)". If it doesn't start, `sudo journalctl -u asterisk -n 30` and `sudo tail -50 /var/log/asterisk/messages.log` show why. Running `sudo bash install.sh` again also repairs the setup and restarts Asterisk. |
 | "Unable to open ... asterisk.conf" | Harmless: `asterisk` was run without `sudo`. Use `sudo asterisk -r` to open the Asterisk console. |
 
 ## How it works
